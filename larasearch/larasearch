@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# larasearch — entry point
+# Traverses up to find Laravel root (artisan), then delegates to dev
+
+set -euo pipefail
+
+find_laravel_root() {
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/artisan" ]]; then
+      echo "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+if ! LARAVEL_ROOT="$(find_laravel_root)"; then
+  echo "❌ Not inside a Laravel project" >&2
+  exit 1
+fi
+
+export LARAVEL_ROOT
+
+cd "$LARAVEL_ROOT"
+
+exec "$HOME/.larasearch/dev" "$@"

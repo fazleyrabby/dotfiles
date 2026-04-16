@@ -1,0 +1,283 @@
+#!/usr/bin/env bash
+# larasearch dev — core engine
+# Dependencies: bash, grep, awk, sed, find, php
+
+set -uo pipefail
+
+DIVIDER="----------------------------------------"
+
+# Shared find exclusions
+EXCLUDES=(
+  ! -path "*/vendor/*"
+  ! -path "*/node_modules/*"
+  ! -path "*/storage/*"
+  ! -path "*/bootstrap/cache/*"
+  ! -path "*/.git/*"
+  ! -path "*/dist/*"
+  ! -path "*/build/*"
+  ! -path "*/coverage/*"
+  ! -path "*/.next/*"
+  ! -path "*/.nuxt/*"
+)
+
+# ---------------------------------------------------------------------------
+# FUZZY NORMALIZATION
+# camelCase → words, _ and - → space, lowercase, collapse spaces
+# ---------------------------------------------------------------------------
+normalize() {
+  echo "$*" \
+    | sed 's/\([a-z]\)\([A-Z]\)/\1 \2/g' \
+    | sed 's/\([A-Z]\)\([A-Z][a-z]\)/\1 \2/g' \
+    | tr '_-' '  ' \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -s ' ' \
+    | sed 's/^ //;s/ $//'
+}
+
+# Build a grep pattern from normalized term: "cancel order" → "cancel.*order"
+make_pattern() {
+  local norm
+  norm="$(normalize "$*")"
+  echo "$norm" | sed 's/ /.*/g'
+}
+
+# ---------------------------------------------------------------------------
+# ROUTE SEARCH
+# ---------------------------------------------------------------------------
+cmd_route() {
+  local term="$*"
+  local norm pattern
+
+  norm="$(normalize "$term")"
+  pattern="$(make_pattern "$term")"
+
+  echo "🔍 Searching routes for: $norm"
+  echo "$DIVIDER"
+
+  local raw
+  if ! raw="$(COLUMNS=300 php artisan route:list 2>/dev/null)"; then
+    echo "❌ php artisan route:list failed" >&2
+    exit 1
+  fi
+
+  # Normalize each line and filter, but print the original line
+  local results=()
+  while IFS= read -r line; do
+    local norm_line
+    norm_line="$(normalize "$line")"
+    if echo "$norm_line" | grep -qiE "$pattern"; then
+      results+=("$line")
+    fi
+  done <<< "$raw"
+
+  if [[ ${#results[@]} -eq 0 ]]; then
+    echo "❌ No results found for: $norm"
+    exit 0
+  fi
+
+  for r in "${results[@]}"; do
+    echo "$r"
+  done
+}
+
+
+# ---------------------------------------------------------------------------
+# WHERE / USAGE SEARCH
+# ---------------------------------------------------------------------------
+cmd_where() {
+  local term="$*"
+  local norm pattern
+
+  norm="$(normalize "$term")"
+  pattern="$(make_pattern "$term")"
+
+  echo "🔍 Searching usage for: $norm"
+  echo "$DIVIDER"
+
+  local found=0
+  local file_count=0
+  local matches=()
+
+  while IFS= read -r file; do
+    (( file_count++ )) || true
+    printf "\r  📂 Scanning... [%d files] %-60s" "$file_count" "${file#"$LARAVEL_ROOT"/}" >&2
+
+    while IFS= read -r line; do
+      local norm_line
+      norm_line="$(normalize "$line")"
+      if echo "$norm_line" | grep -qiE "$pattern"; then
+        matches+=("$file: $line")
+        found=1
+      fi
+    done < "$file"
+  done < <(find app routes resources \
+    -type f \
+    -name "*.php" \
+    "${EXCLUDES[@]}" \
+    2>/dev/null)
+
+  printf "\r%-80s\r" "" >&2
+  echo "📊 Scanned $file_count files"
+  echo "$DIVIDER"
+
+  if [[ $found -eq 0 ]]; then
+    echo "❌ No results found for: $norm"
+  else
+    for m in "${matches[@]}"; do
+      echo "$m"
+    done
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# AI CONTEXT GENERATOR
+# ---------------------------------------------------------------------------
+cmd_ai() {
+  local term="$*"
+  local norm pattern
+
+  norm="$(normalize "$term")"
+  pattern="$(make_pattern "$term")"
+
+  echo "🧠 Building AI context for: $norm"
+  echo "$DIVIDER"
+
+  # --- Step 1: get route list ---
+  local raw
+  if ! raw="$(COLUMNS=300 php artisan route:list 2>/dev/null)"; then
+    echo "❌ php artisan route:list failed" >&2
+    exit 1
+  fi
+
+  # --- Step 2: find best matching route ---
+  local best_route=""
+  while IFS= read -r line; do
+    local norm_line
+    norm_line="$(normalize "$line")"
+    if echo "$norm_line" | grep -qiE "$pattern"; then
+      best_route="$line"
+      break
+    fi
+  done <<< "$raw"
+
+  if [[ -z "$best_route" ]]; then
+    echo "❌ No matching route found for: $norm"
+    exit 0
+  fi
+
+  # --- Step 3: extract Controller@method ---
+  # Handles formats: "App\Http\Controllers\OrderController@cancel"
+  # or plain "OrderController@cancel"
+  local controller_full method controller_short
+
+  controller_full="$(echo "$best_route" | grep -oE '[A-Za-z\\]+Controller@[A-Za-z_]+' | head -1)"
+
+  if [[ -z "$controller_full" ]]; then
+    # Try invokable or closure style
+    controller_full="$(echo "$best_route" | grep -oE '[A-Za-z\\]+Controller' | head -1)"
+    method=""
+  else
+    method="$(echo "$controller_full" | awk -F'@' '{print $2}')"
+    controller_short="$(echo "$controller_full" | awk -F'@' '{print $1}' | awk -F'\\\\' '{print $NF}')"
+  fi
+
+  echo ""
+  echo "📍 Route:"
+  echo "  $best_route"
+  echo ""
+  echo "🎮 Controller:"
+  echo "  $controller_full"
+  echo ""
+
+  # --- Step 4: search method usage in app/ ---
+  local usage_results=()
+  if [[ -n "$method" ]]; then
+    local method_pattern
+    method_pattern="$(make_pattern "$method")"
+    local ai_file_count=0
+
+    while IFS= read -r file; do
+      (( ai_file_count++ )) || true
+      printf "\r  📂 Scanning... [%d files] %-60s" "$ai_file_count" "${file#"$LARAVEL_ROOT"/}" >&2
+
+      while IFS= read -r line; do
+        local norm_line
+        norm_line="$(normalize "$line")"
+        if echo "$norm_line" | grep -qiE "$method_pattern"; then
+          usage_results+=("$file: $line")
+          if [[ ${#usage_results[@]} -ge 10 ]]; then
+            break 2
+          fi
+        fi
+      done < "$file"
+    done < <(find app \
+      -type f \
+      -name "*.php" \
+      "${EXCLUDES[@]}" \
+      2>/dev/null)
+
+    printf "\r%-80s\r" "" >&2
+    echo "📊 Scanned $ai_file_count files"
+    echo ""
+  fi
+
+  echo "🔍 Related Usage:"
+  if [[ ${#usage_results[@]} -eq 0 ]]; then
+    echo "  (none found)"
+  else
+    for u in "${usage_results[@]}"; do
+      echo "  $u"
+    done
+  fi
+
+  echo ""
+  echo "$DIVIDER"
+  echo ""
+  echo "📦 AI PROMPT:"
+  echo ""
+  echo "Route:"
+  echo "  $best_route"
+  echo ""
+  echo "Controller:"
+  echo "  $controller_full"
+  echo ""
+  echo "Focus:"
+  echo "  ${method:-<method not detected>}"
+}
+
+# ---------------------------------------------------------------------------
+# DISPATCH
+# ---------------------------------------------------------------------------
+usage() {
+  cat <<EOF
+larasearch — semantic search for Laravel projects
+
+Commands:
+  route <term>   Search routes (fuzzy)
+  where <term>   Search usage in app/, routes/, resources/
+  ai    <term>   Generate AI context block for a route/method
+
+Term examples:
+  cancel order | cancel_order | cancelOrder | CancelOrder
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  usage
+  exit 0
+fi
+
+CMD="$1"
+shift
+
+case "$CMD" in
+  route) cmd_route "$@" ;;
+  where) cmd_where "$@" ;;
+  ai)    cmd_ai    "$@" ;;
+  *)
+    echo "❌ Unknown command: $CMD"
+    echo ""
+    usage
+    exit 1
+    ;;
+esac

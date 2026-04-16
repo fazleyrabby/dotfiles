@@ -1,28 +1,14 @@
 #!/usr/bin/env bash
 # larasearch dev — core engine
-# Dependencies: bash, grep, awk, sed, find, php
+# Dependencies: bash, grep, awk, sed, php
 
 set -uo pipefail
 
 DIVIDER="----------------------------------------"
 
-# Shared find exclusions
-EXCLUDES=(
-  ! -path "*/vendor/*"
-  ! -path "*/node_modules/*"
-  ! -path "*/storage/*"
-  ! -path "*/bootstrap/cache/*"
-  ! -path "*/.git/*"
-  ! -path "*/dist/*"
-  ! -path "*/build/*"
-  ! -path "*/coverage/*"
-  ! -path "*/.next/*"
-  ! -path "*/.nuxt/*"
-)
-
 # ---------------------------------------------------------------------------
-# FUZZY NORMALIZATION
-# camelCase → words, _ and - → space, lowercase, collapse spaces
+# NORMALIZATION
+# camelCase → words, _/- → space, lowercase, collapse spaces
 # ---------------------------------------------------------------------------
 normalize() {
   echo "$*" \
@@ -34,7 +20,8 @@ normalize() {
     | sed 's/^ //;s/ $//'
 }
 
-# Build a grep pattern from normalized term: "cancel order" → "cancel.*order"
+# Normalize-based pattern for in-memory matching (route:list)
+# "cancel order" → "cancel.*order"
 make_pattern() {
   local norm
   norm="$(normalize "$*")"
@@ -42,14 +29,48 @@ make_pattern() {
 }
 
 # ---------------------------------------------------------------------------
+# MULTI-VARIANT GREP PATTERN
+# "cancel order" → cancel.*order|cancelOrder|cancel_order|CancelOrder
+# Used for file scanning — avoids per-line normalize overhead
+# ---------------------------------------------------------------------------
+make_grep_pattern() {
+  local norm
+  norm="$(normalize "$*")"
+  local words=()
+  IFS=' ' read -ra words <<< "$norm"
+
+  # dot_star: cancel.*order
+  local dot_star
+  dot_star="$(echo "$norm" | sed 's/ /.*/g')"
+
+  # camelCase: cancelOrder
+  local camel="${words[0]}"
+  for w in "${words[@]:1}"; do
+    camel+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
+  done
+
+  # snake_case: cancel_order
+  local snake
+  snake="$(echo "$norm" | tr ' ' '_')"
+
+  # PascalCase: CancelOrder
+  local pascal=""
+  for w in "${words[@]}"; do
+    pascal+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
+  done
+
+  echo "${dot_star}|${camel}|${snake}|${pascal}"
+}
+
+# ---------------------------------------------------------------------------
 # ROUTE SEARCH
 # ---------------------------------------------------------------------------
 cmd_route() {
   local term="$*"
-  local norm pattern
-
+  local norm
   norm="$(normalize "$term")"
-  pattern="$(make_pattern "$term")"
+  local gpattern
+  gpattern="$(make_grep_pattern "$term")"
 
   echo "🔍 Searching routes for: $norm"
   echo "$DIVIDER"
@@ -60,73 +81,52 @@ cmd_route() {
     exit 1
   fi
 
-  # Normalize each line and filter, but print the original line
-  local results=()
-  while IFS= read -r line; do
-    local norm_line
-    norm_line="$(normalize "$line")"
-    if echo "$norm_line" | grep -qiE "$pattern"; then
-      results+=("$line")
-    fi
-  done <<< "$raw"
+  local results
+  results="$(echo "$raw" | grep -iE "$gpattern")"
 
-  if [[ ${#results[@]} -eq 0 ]]; then
+  if [[ -z "$results" ]]; then
     echo "❌ No results found for: $norm"
     exit 0
   fi
 
-  for r in "${results[@]}"; do
-    echo "$r"
-  done
+  echo "$results"
 }
-
 
 # ---------------------------------------------------------------------------
 # WHERE / USAGE SEARCH
 # ---------------------------------------------------------------------------
 cmd_where() {
   local term="$*"
-  local norm pattern
-
+  local norm
   norm="$(normalize "$term")"
-  pattern="$(make_pattern "$term")"
+  local gpattern
+  gpattern="$(make_grep_pattern "$term")"
 
-  echo "🔍 Searching usage for: $norm"
+  echo "🔍 Searching for: $norm"
   echo "$DIVIDER"
 
-  local found=0
-  local file_count=0
-  local matches=()
+  printf "⚙️  Scanning project files..."
 
-  while IFS= read -r file; do
-    (( file_count++ )) || true
-    printf "\r  📂 Scanning... [%d files] %-60s" "$file_count" "${file#"$LARAVEL_ROOT"/}" >&2
+  local results
+  results="$(grep -rniE "$gpattern" \
+    --include="*.php" \
+    --exclude-dir=vendor \
+    --exclude-dir=node_modules \
+    --exclude-dir=storage \
+    --exclude-dir=.git \
+    --exclude-dir=bootstrap \
+    app/ routes/ resources/ 2>/dev/null)" || true
 
-    while IFS= read -r line; do
-      local norm_line
-      norm_line="$(normalize "$line")"
-      if echo "$norm_line" | grep -qiE "$pattern"; then
-        matches+=("$file: $line")
-        found=1
-      fi
-    done < "$file"
-  done < <(find app routes resources \
-    -type f \
-    -name "*.php" \
-    "${EXCLUDES[@]}" \
-    2>/dev/null)
+  printf "\r\033[K"
 
-  printf "\r%-80s\r" "" >&2
-  echo "📊 Scanned $file_count files"
-  echo "$DIVIDER"
-
-  if [[ $found -eq 0 ]]; then
-    echo "❌ No results found for: $norm"
-  else
-    for m in "${matches[@]}"; do
-      echo "$m"
-    done
+  if [[ -z "$results" ]]; then
+    echo "❌ No results found"
+    return
   fi
+
+  echo "✅ Found matches:"
+  echo "$DIVIDER"
+  print_results "$results"
 }
 
 # ---------------------------------------------------------------------------
@@ -135,21 +135,20 @@ cmd_where() {
 cmd_ai() {
   local term="$*"
   local norm pattern
-
   norm="$(normalize "$term")"
   pattern="$(make_pattern "$term")"
 
   echo "🧠 Building AI context for: $norm"
   echo "$DIVIDER"
 
-  # --- Step 1: get route list ---
+  # Step 1: get route list
   local raw
   if ! raw="$(COLUMNS=300 php artisan route:list 2>/dev/null)"; then
     echo "❌ php artisan route:list failed" >&2
     exit 1
   fi
 
-  # --- Step 2: find best matching route ---
+  # Step 2: find best matching route
   local best_route=""
   while IFS= read -r line; do
     local norm_line
@@ -165,20 +164,15 @@ cmd_ai() {
     exit 0
   fi
 
-  # --- Step 3: extract Controller@method ---
-  # Handles formats: "App\Http\Controllers\OrderController@cancel"
-  # or plain "OrderController@cancel"
-  local controller_full method controller_short
-
+  # Step 3: extract Controller@method
+  local controller_full method
   controller_full="$(echo "$best_route" | grep -oE '[A-Za-z\\]+Controller@[A-Za-z_]+' | head -1)"
 
   if [[ -z "$controller_full" ]]; then
-    # Try invokable or closure style
     controller_full="$(echo "$best_route" | grep -oE '[A-Za-z\\]+Controller' | head -1)"
     method=""
   else
     method="$(echo "$controller_full" | awk -F'@' '{print $2}')"
-    controller_short="$(echo "$controller_full" | awk -F'@' '{print $1}' | awk -F'\\\\' '{print $NF}')"
   fi
 
   echo ""
@@ -189,45 +183,46 @@ cmd_ai() {
   echo "  $controller_full"
   echo ""
 
-  # --- Step 4: search method usage in app/ ---
-  local usage_results=()
+  # Step 4: grep usage in app/
   if [[ -n "$method" ]]; then
-    local method_pattern
-    method_pattern="$(make_pattern "$method")"
-    local ai_file_count=0
+    local mgpattern
+    mgpattern="$(make_grep_pattern "$method")"
 
-    while IFS= read -r file; do
-      (( ai_file_count++ )) || true
-      printf "\r  📂 Scanning... [%d files] %-60s" "$ai_file_count" "${file#"$LARAVEL_ROOT"/}" >&2
+    printf "⚙️  Scanning for usages..."
 
+    local usage_raw
+    usage_raw="$(grep -rniE "$mgpattern" \
+      --include="*.php" \
+      --exclude-dir=vendor \
+      --exclude-dir=node_modules \
+      --exclude-dir=storage \
+      --exclude-dir=.git \
+      --exclude-dir=bootstrap \
+      app/ 2>/dev/null \
+      | head -10)" || true
+
+    printf "\r\033[K"
+
+    echo "🔍 Related Usage:"
+    if [[ -z "$usage_raw" ]]; then
+      echo "  (none found)"
+    else
+      local prev_file=""
       while IFS= read -r line; do
-        local norm_line
-        norm_line="$(normalize "$line")"
-        if echo "$norm_line" | grep -qiE "$method_pattern"; then
-          usage_results+=("$file: $line")
-          if [[ ${#usage_results[@]} -ge 10 ]]; then
-            break 2
-          fi
+        local file rest line_num match
+        file="${line%%:*}"
+        rest="${line#*:}"
+        line_num="${rest%%:*}"
+        match="${rest#*:}"
+        if [[ "$file" != "$prev_file" ]]; then
+          echo ""
+          echo "    📄  ${file#"$LARAVEL_ROOT"/}"
+          prev_file="$file"
         fi
-      done < "$file"
-    done < <(find app \
-      -type f \
-      -name "*.php" \
-      "${EXCLUDES[@]}" \
-      2>/dev/null)
-
-    printf "\r%-80s\r" "" >&2
-    echo "📊 Scanned $ai_file_count files"
-    echo ""
-  fi
-
-  echo "🔍 Related Usage:"
-  if [[ ${#usage_results[@]} -eq 0 ]]; then
-    echo "  (none found)"
-  else
-    for u in "${usage_results[@]}"; do
-      echo "  $u"
-    done
+        printf "       %4s │ %s\n" "$line_num" "$(echo "$match" | sed 's/^[[:space:]]*//')"
+      done <<< "$usage_raw"
+      echo ""
+    fi
   fi
 
   echo ""
@@ -246,16 +241,240 @@ cmd_ai() {
 }
 
 # ---------------------------------------------------------------------------
+# SHARED RESULT PRINTER
+# ---------------------------------------------------------------------------
+print_results() {
+  local results="$1"
+  local prev_file=""
+  local file_count=0
+  local match_count=0
+
+  while IFS= read -r line; do
+    local file rest line_num match
+    file="${line%%:*}"
+    rest="${line#*:}"
+    line_num="${rest%%:*}"
+    match="${rest#*:}"
+
+    if [[ "$file" != "$prev_file" ]]; then
+      echo ""
+      echo "  📄  ${file#"$LARAVEL_ROOT"/}"
+      prev_file="$file"
+      (( file_count++ )) || true
+    fi
+    printf "     %4s │ %s\n" "$line_num" "$(echo "$match" | sed 's/^[[:space:]]*//')"
+    (( match_count++ )) || true
+  done <<< "$results"
+
+  echo ""
+  echo "$DIVIDER"
+  printf "%d match(es) in %d file(s)\n" "$match_count" "$file_count"
+}
+
+# ---------------------------------------------------------------------------
+# DEFINITION SEARCH — grep for keyword across all app/
+# larasearch fn cancelOrder | class OrderService | trait HasRoles
+# ---------------------------------------------------------------------------
+cmd_def() {
+  local keyword="$1"
+  shift
+  local term="$*"
+  local norm
+  norm="$(normalize "$term")"
+  local gpattern
+  gpattern="$(make_grep_pattern "$term")"
+
+  echo "🔍 Searching ${keyword}s for: $norm"
+  echo "$DIVIDER"
+
+  printf "⚙️  Scanning project files..."
+
+  local results
+  results="$(grep -rniE "${keyword}\s+(${gpattern})" \
+    --include="*.php" \
+    --exclude-dir=vendor \
+    --exclude-dir=node_modules \
+    --exclude-dir=storage \
+    --exclude-dir=.git \
+    --exclude-dir=bootstrap \
+    app/ 2>/dev/null)" || true
+
+  printf "\r\033[K"
+
+  if [[ -z "$results" ]]; then
+    echo "❌ No ${keyword} found matching: $norm"
+    return
+  fi
+
+  echo "✅ Found:"
+  echo "$DIVIDER"
+  print_results "$results"
+}
+
+# ---------------------------------------------------------------------------
+# MODULE SEARCH — directory-scoped, finds class/trait/enum definitions
+# larasearch model Order | service OrderService | job ProcessOrder
+# Accepts one or more space-separated directories as $2
+# ---------------------------------------------------------------------------
+cmd_module() {
+  local label="$1"
+  local search_dir="$2"
+  shift 2
+  local term="$*"
+  local norm
+  norm="$(normalize "$term")"
+  local gpattern
+  gpattern="$(make_grep_pattern "$term")"
+
+  echo "🔍 Searching $label for: $norm"
+  echo "$DIVIDER"
+
+  # Build list of existing dirs
+  local dirs=()
+  for d in $search_dir; do
+    [[ -d "$d" ]] && dirs+=("$d")
+  done
+
+  if [[ ${#dirs[@]} -eq 0 ]]; then
+    echo "❌ No $label directory found in this project"
+    return
+  fi
+
+  printf "⚙️  Scanning %s..." "${dirs[*]}"
+
+  local results
+  results="$(grep -rniE "(class|abstract class|trait|interface|enum)\s+(${gpattern})" \
+    --include="*.php" \
+    --exclude-dir=vendor \
+    --exclude-dir=node_modules \
+    "${dirs[@]}" 2>/dev/null)" || true
+
+  printf "\r\033[K"
+
+  if [[ -z "$results" ]]; then
+    echo "❌ No $label found matching: $norm"
+    return
+  fi
+
+  echo "✅ Found:"
+  echo "$DIVIDER"
+  print_results "$results"
+}
+
+# ---------------------------------------------------------------------------
+# MIGRATION SEARCH — filename search in database/migrations
+# ---------------------------------------------------------------------------
+cmd_migration() {
+  local term="$*"
+  local norm
+  norm="$(normalize "$term")"
+  local file_pattern
+  file_pattern="$(echo "$norm" | tr ' ' '_')"
+
+  echo "🔍 Searching migrations for: $norm"
+  echo "$DIVIDER"
+
+  if [[ ! -d "database/migrations" ]]; then
+    echo "❌ No migration directory found in this project"
+    return
+  fi
+
+  printf "⚙️  Scanning migration files..."
+
+  local files
+  files="$(find database/migrations -name "*${file_pattern}*.php" 2>/dev/null)" || true
+
+  printf "\r\033[K"
+
+  if [[ -z "$files" ]]; then
+    echo "❌ No migration found matching: $norm"
+    return
+  fi
+
+  local gpattern
+  gpattern="$(make_grep_pattern "$term")"
+
+  local results
+  # Grep inside the found files.
+  results="$(grep -niE "(${gpattern})" $files 2>/dev/null)" || true
+
+  if [[ -z "$results" ]]; then
+    # if grep finds nothing, just show the filenames
+    results="$(for f in $files; do echo "$f:1:"; done)"
+  fi
+
+  echo "✅ Found:"
+  echo "$DIVIDER"
+  print_results "$results"
+}
+
+# ---------------------------------------------------------------------------
+# BLADE VIEW SEARCH — content search in resources/views
+# ---------------------------------------------------------------------------
+cmd_view() {
+  local term="$*"
+  local norm
+  norm="$(normalize "$term")"
+  local gpattern
+  gpattern="$(make_grep_pattern "$term")"
+
+  echo "🔍 Searching views for: $norm"
+  echo "$DIVIDER"
+
+  if [[ ! -d "resources/views" ]]; then
+    echo "❌ No 'resources/views' directory found in this project"
+    return
+  fi
+
+  printf "⚙️  Scanning view files..."
+
+  local results
+  results="$(grep -rniE "$gpattern" \
+    --include="*.blade.php" \
+    --exclude-dir=vendor \
+    --exclude-dir=node_modules \
+    resources/views/ 2>/dev/null)" || true
+
+  printf "\r\033[K"
+
+  if [[ -z "$results" ]]; then
+    echo "❌ No view found matching: $norm"
+    return
+  fi
+
+  echo "✅ Found:"
+  echo "$DIVIDER"
+  print_results "$results"
+}
+
+# ---------------------------------------------------------------------------
 # DISPATCH
 # ---------------------------------------------------------------------------
-usage() {
+print_usage() {
   cat <<EOF
 larasearch — semantic search for Laravel projects
 
-Commands:
-  route <term>   Search routes (fuzzy)
-  where <term>   Search usage in app/, routes/, resources/
-  ai    <term>   Generate AI context block for a route/method
+Core:
+  route <term>        Search routes (fuzzy)
+  where <term>        Search usage in app/, routes/, resources/
+  view  <term>        Search blade views
+  ai    <term>        Generate AI context block for a route/method
+
+Definitions (searches all of app/):
+  class <term>        Find class definitions
+  fn    <term>        Find function/method definitions
+  trait <term>        Find trait definitions
+  interface <term>    Find interface definitions
+  enum  <term>        Find enum definitions
+
+Laravel modules (directory-scoped):
+  action       command      controller   event        job
+  listener     mail         middleware   model        notification
+  observer     policy       provider     request      resource
+  rule         service      cast         exception    channel
+  component    facade       factory      seeder       livewire
+  migration    repository   contract     helper       dto
+  filament
 
 Term examples:
   cancel order | cancel_order | cancelOrder | CancelOrder
@@ -263,7 +482,7 @@ EOF
 }
 
 if [[ $# -eq 0 ]]; then
-  usage
+  print_usage
   exit 0
 fi
 
@@ -271,13 +490,56 @@ CMD="$1"
 shift
 
 case "$CMD" in
-  route) cmd_route "$@" ;;
-  where) cmd_where "$@" ;;
-  ai)    cmd_ai    "$@" ;;
+  # Core
+  route)        cmd_route "$@" ;;
+  where)        cmd_where "$@" ;;
+  view)         cmd_view "$@" ;;
+  ai)           cmd_ai    "$@" ;;
+
+  # Definition searches
+  class)        cmd_def "class"      "$@" ;;
+  fn)           cmd_def "function"   "$@" ;;
+  trait)        cmd_def "trait"      "$@" ;;
+  interface)    cmd_def "interface"  "$@" ;;
+  enum)         cmd_def "enum"       "$@" ;;
+
+  # Directory-scoped module searches
+  model)        cmd_module "Model"        "app/Models"               "$@" ;;
+  controller)   cmd_module "Controller"   "app/Http/Controllers"     "$@" ;;
+  service)      cmd_module "Service"      "app/Services"             "$@" ;;
+  job)          cmd_module "Job"          "app/Jobs"                 "$@" ;;
+  mail)         cmd_module "Mail"         "app/Mail"                 "$@" ;;
+  middleware)   cmd_module "Middleware"   "app/Http/Middleware"      "$@" ;;
+  event)        cmd_module "Event"        "app/Events"               "$@" ;;
+  listener)     cmd_module "Listener"     "app/Listeners"            "$@" ;;
+  policy)       cmd_module "Policy"       "app/Policies"             "$@" ;;
+  observer)     cmd_module "Observer"     "app/Observers"            "$@" ;;
+  command)      cmd_module "Command"      "app/Console/Commands"     "$@" ;;
+  notification) cmd_module "Notification" "app/Notifications"        "$@" ;;
+  rule)         cmd_module "Rule"         "app/Rules"                "$@" ;;
+  resource)     cmd_module "Resource"     "app/Http/Resources"       "$@" ;;
+  request)      cmd_module "Request"      "app/Http/Requests"        "$@" ;;
+  provider)     cmd_module "Provider"      "app/Providers"                        "$@" ;;
+  livewire)     cmd_module "Livewire"     "app/Http/Livewire app/Livewire"       "$@" ;;
+  cast)         cmd_module "Cast"         "app/Casts"                            "$@" ;;
+  exception)    cmd_module "Exception"    "app/Exceptions"                       "$@" ;;
+  channel)      cmd_module "Channel"      "app/Broadcasting"                     "$@" ;;
+  component)    cmd_module "Component"    "app/View/Components"                  "$@" ;;
+  facade)       cmd_module "Facade"       "app/Facades"                          "$@" ;;
+  action)       cmd_module "Action"       "app/Actions"                          "$@" ;;
+  factory)      cmd_module "Factory"      "database/factories"                   "$@" ;;
+  seeder)       cmd_module "Seeder"       "database/seeders"                     "$@" ;;
+  migration)    cmd_migration "$@" ;;
+  repository)   cmd_module "Repository"   "app/Repositories"                     "$@" ;;
+  contract)     cmd_module "Contract"     "app/Contracts"                        "$@" ;;
+  helper)       cmd_module "Helper"       "app/Helpers"                          "$@" ;;
+  dto)          cmd_module "DTO"          "app/DTOs app/Data app/DataTransferObjects" "$@" ;;
+  filament)     cmd_module "Filament"     "app/Filament"                         "$@" ;;
+
   *)
     echo "❌ Unknown command: $CMD"
     echo ""
-    usage
+    print_usage
     exit 1
     ;;
 esac

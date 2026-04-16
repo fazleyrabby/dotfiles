@@ -1,31 +1,23 @@
-# Larasearch
+# Semantic Search Tools
 
-A high-performance semantic search tool for Laravel projects. It helps you quickly find routes, models, controllers, and views, and can even generate AI-ready context blocks.
+A collection of high-performance semantic search tools for modern frameworks. These tools help you quickly find files, definitions, and context within your projects using various naming conventions automatically.
 
-## Features
+## Included Tools
+
+- **Larasearch:** Optimized for Laravel projects.
+- **Nestsearch:** Optimized for NestJS projects.
+- **Nextsearch:** Optimized for Next.js projects.
+
+## Common Features
 
 - **Semantic Search:** Find code using various naming conventions (camelCase, snake_case, PascalCase) automatically.
-- **Directory Scoped:** Targeted searches for Laravel modules (e.g., `larasearch model User`).
-- **AI Context:** Generate a structured prompt block for a specific route/method using `larasearch ai <term>`.
-- **High Performance:** Automatically utilizes `ripgrep` for lightning-fast file scanning if available.
+- **Framework Aware:** Targeted searches based on each framework's directory structure and patterns.
+- **High Performance:** Automatically utilizes `ripgrep` (`rg`) for lightning-fast file scanning if available.
+- **Smart Root Detection:** Automatically finds the project root from any subdirectory.
 
-## Installation
+---
 
-1. Clone this repository to your preferred location.
-2. Run the install script (or manually link to your `~/.larasearch` directory):
-   ```bash
-   ./install.sh
-   ```
-3. Add `~/.larasearch` to your PATH.
-
-## Dependencies
-
-- **Bash 4+**
-- **PHP** (for `artisan` commands)
-- **ripgrep (`rg`)** (Optional but highly recommended for 10x faster searches). 
-  - Install via Homebrew: `brew install ripgrep`
-
-## Usage
+## 🐘 Larasearch (Laravel)
 
 ### Core Commands
 - `larasearch route <term>`: Search routes (fuzzy match).
@@ -35,19 +27,51 @@ A high-performance semantic search tool for Laravel projects. It helps you quick
 
 ### Module Searches
 Quickly find definitions in specific directories:
-`action`, `command`, `controller`, `event`, `job`, `listener`, `mail`, `middleware`, `model`, `notification`, `observer`, `policy`, `provider`, `request`, `resource`, `rule`, `service`, `cast`, `exception`, `channel`, `component`, `facade`, `factory`, `seeder`, `livewire`, `migration`, `repository`, `contract`, `helper`, `dto`, `filament`.
+`action`, `controller`, `model`, `service`, `request`, `resource`, `middleware`, `provider`, `job`, `event`, `listener`, `mail`, `notification`, etc.
 
-Example:
-```bash
-larasearch model Order
-larasearch controller Payment
-```
+---
+
+## 🦁 Nestsearch (NestJS)
+
+### Core Commands
+- `nestsearch where <term>`: Search all `src/` files.
+- `nestsearch controller <term>`: Search `@Controller` definitions.
+- `nestsearch service <term>`: Search `@Injectable` definitions.
+- `nestsearch module <term>`: Search `@Module` definitions.
+- `nestsearch dto <term>`: Search DTOs (filename/class).
+- `nestsearch entity <term>`: Search Entities (`@Entity`).
+
+---
+
+## ⚛️ Nextsearch (Next.js)
+
+### Core Commands
+- `nextsearch where <term>`: Search across `src/`, `app/`, `pages/`, and `components/`.
+- `nextsearch page <term>`: Find pages (`page.tsx` or `pages/*.tsx`).
+- `nextsearch api <term>`: Find API routes (`route.ts` or `pages/api/*.ts`).
+- `nextsearch component <term>`: Find components (PascalCase filenames).
+
+---
+
+## Installation
+
+1. Clone this repository.
+2. Run the install script:
+   ```bash
+   ./install.sh
+   ```
+3. Restart your shell or run `exec zsh`.
+
+## Dependencies
+
+- **Bash 4+**
+- **ripgrep (`rg`)** (Optional but highly recommended for 10x faster searches). 
+  - Install via Homebrew: `brew install ripgrep`
+- **PHP** (Required for Larasearch's `artisan` integrations)
 
 ## Recent Updates
 
-- **Ripgrep Support:** Integrated `rg` for near-instant project scanning.
-- **Bash Loop Optimization:** Refactored internal pipelines to remove slow Bash loops in the AI context generator.
-- **Bug Fixes:** 
-    - Fixed "unbound variable" error when running commands without search terms.
-    - Improved regex compatibility between standard `grep` and `ripgrep`.
-    - Better handling of Laravel project root detection.
+- **Unified Toolset:** Added `nestsearch` and `nextsearch` to the collection.
+- **Ripgrep Support:** Integrated `rg` for near-instant project scanning across all tools.
+- **Optimized Pipelines:** Refactored internal pipelines for better performance and reliability.
+- **Framework Root Detection:** Improved detection for Next.js and NestJS project roots.

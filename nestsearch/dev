@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+# nestsearch dev — core engine for NestJS
+# Dependencies: bash, grep, rg (optional), awk, sed
+
+set -uo pipefail
+
+DIVIDER="----------------------------------------"
+
+normalize() {
+  echo "$*" \
+    | sed 's/\([a-z]\)\([A-Z]\)/\1 \2/g' \
+    | sed 's/\([A-Z]\)\([A-Z][a-z]\)/\1 \2/g' \
+    | tr '_-' '  ' \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -s ' ' \
+    | sed 's/^ //;s/ $//'
+}
+
+make_grep_pattern() {
+  local norm
+  norm="$(normalize "$*")"
+  local words=()
+  IFS=' ' read -ra words <<< "$norm"
+
+  local dot_star
+  dot_star="$(echo "$norm" | sed 's/ /.*/g')"
+
+  local camel="${words[0]:-}"
+  for w in "${words[@]:1}"; do
+    camel+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
+  done
+
+  local snake
+  snake="$(echo "$norm" | tr ' ' '_')"
+
+  local pascal=""
+  for w in "${words[@]}"; do
+    pascal+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
+  done
+
+  echo "${dot_star}|${camel}|${snake}|${pascal}"
+}
+
+print_results() {
+  local results="$1"
+  local prev_file=""
+  local file_count=0
+  local match_count=0
+
+  while IFS= read -r line; do
+    local file rest line_num match
+    file="${line%%:*}"
+    rest="${line#*:}"
+    line_num="${rest%%:*}"
+    match="${rest#*:}"
+
+    if [[ "$file" != "$prev_file" ]]; then
+      echo ""
+      echo "  📄  ${file#"$NEST_ROOT"/}"
+      prev_file="$file"
+      (( file_count++ )) || true
+    fi
+    printf "     %4s │ %s\n" "$line_num" "$(echo "$match" | sed 's/^[[:space:]]*//')"
+    (( match_count++ )) || true
+  done <<< "$results"
+
+  echo ""
+  echo "$DIVIDER"
+  printf "%d match(es) in %d file(s)\n" "$match_count" "$file_count"
+}
+
+cmd_where() {
+  local term="$*"
+  local norm="$(normalize "$term")"
+  local gpattern="$(make_grep_pattern "$term")"
+
+  echo "🔍 Searching NestJS for: $norm"
+  echo "$DIVIDER"
+
+  printf "⚙️  Scanning files..."
+  local results
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "$gpattern" -t ts -t js --glob="!node_modules/*" --glob="!dist/*" src/ 2>/dev/null)" || true
+  else
+    results="$(grep -rniE "$gpattern" --include="*.ts" --include="*.js" --exclude-dir={node_modules,dist} src/ 2>/dev/null)" || true
+  fi
+  printf "\r\033[K"
+
+  if [[ -z "$results" ]]; then
+    echo "❌ No results found"
+    return
+  fi
+  print_results "$results"
+}
+
+cmd_decorator() {
+  local dec="$1"
+  shift
+  local term="$*"
+  local norm="$(normalize "$term")"
+  local gpattern="$(make_grep_pattern "$term")"
+
+  echo "🔍 Searching @${dec} for: $norm"
+  echo "$DIVIDER"
+
+  printf "⚙️  Scanning files..."
+  local results
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "@${dec}.*(${gpattern})" -t ts --glob="!node_modules/*" src/ 2>/dev/null)" || true
+  else
+    results="$(grep -rniE "@${dec}.*(${gpattern})" --include="*.ts" --exclude-dir=node_modules src/ 2>/dev/null)" || true
+  fi
+  printf "\r\033[K"
+
+  if [[ -z "$results" ]]; then
+    echo "❌ No @${dec} found matching: $norm"
+    return
+  fi
+  print_results "$results"
+}
+
+print_usage() {
+  cat <<EOF
+nestsearch — semantic search for NestJS projects
+
+Commands:
+  where <term>       Search all src/ (ts/js)
+  controller <term>  Search @Controller definitions
+  service <term>     Search @Injectable definitions
+  module <term>      Search @Module definitions
+  dto <term>         Search DTOs (filename/class)
+  entity <term>      Search Entities (@Entity)
+  guard <term>       Search Guards (@Injectable & implements CanActivate)
+
+Examples:
+  nestsearch controller user
+  nestsearch where create order
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  print_usage
+  exit 0
+fi
+
+CMD="$1"
+shift
+
+case "$CMD" in
+  where)      cmd_where "$@" ;;
+  controller) cmd_decorator "Controller" "$@" ;;
+  service)    cmd_decorator "Injectable" "$@" ;;
+  module)     cmd_decorator "Module" "$@" ;;
+  entity)     cmd_decorator "Entity" "$@" ;;
+  dto)        cmd_where "$@" ;; # Simplified for DTOs
+  *)
+    echo "❌ Unknown command: $CMD"
+    print_usage
+    exit 1
+    ;;
+esac

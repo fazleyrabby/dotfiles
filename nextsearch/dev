@@ -1,0 +1,188 @@
+#!/usr/bin/env bash
+# nextsearch dev — core engine for Next.js
+# Dependencies: bash, grep, rg (optional), awk, sed
+
+set -uo pipefail
+
+DIVIDER="----------------------------------------"
+
+normalize() {
+  echo "$*" \
+    | sed 's/\([a-z]\)\([A-Z]\)/\1 \2/g' \
+    | sed 's/\([A-Z]\)\([A-Z][a-z]\)/\1 \2/g' \
+    | tr '_-' '  ' \
+    | tr '[:upper:]' '[:lower:]' \
+    | tr -s ' ' \
+    | sed 's/^ //;s/ $//'
+}
+
+make_grep_pattern() {
+  local norm
+  norm="$(normalize "$*")"
+  local words=()
+  IFS=' ' read -ra words <<< "$norm"
+
+  local dot_star
+  dot_star="$(echo "$norm" | sed 's/ /.*/g')"
+
+  local camel="${words[0]:-}"
+  for w in "${words[@]:1}"; do
+    camel+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
+  done
+
+  local snake
+  snake="$(echo "$norm" | tr ' ' '_')"
+
+  local pascal=""
+  for w in "${words[@]}"; do
+    pascal+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
+  done
+
+  echo "${dot_star}|${camel}|${snake}|${pascal}"
+}
+
+print_results() {
+  local results="$1"
+  local prev_file=""
+  local file_count=0
+  local match_count=0
+
+  while IFS= read -r line; do
+    local file rest line_num match
+    file="${line%%:*}"
+    rest="${line#*:}"
+    line_num="${rest%%:*}"
+    match="${rest#*:}"
+
+    if [[ "$file" != "$prev_file" ]]; then
+      echo ""
+      echo "  📄  ${file#"$NEXT_ROOT"/}"
+      prev_file="$file"
+      (( file_count++ )) || true
+    fi
+    printf "     %4s │ %s\n" "$line_num" "$(echo "$match" | sed 's/^[[:space:]]*//')"
+    (( match_count++ )) || true
+  done <<< "$results"
+
+  echo ""
+  echo "$DIVIDER"
+  printf "%d match(es) in %d file(s)\n" "$match_count" "$file_count"
+}
+
+cmd_where() {
+  local term="$*"
+  local norm="$(normalize "$term")"
+  local gpattern="$(make_grep_pattern "$term")"
+
+  echo "🔍 Searching Next.js for: $norm"
+  echo "$DIVIDER"
+
+  printf "⚙️  Scanning files..."
+  local results
+  local search_dirs=("src" "app" "pages" "components")
+  local existing_dirs=()
+  for d in "${search_dirs[@]}"; do
+    [[ -d "$d" ]] && existing_dirs+=("$d")
+  done
+
+  if [[ ${#existing_dirs[@]} -eq 0 ]]; then
+     existing_dirs=(".")
+  fi
+
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "$gpattern" -t ts -t js -t tsx -t jsx --glob="!node_modules/*" --glob="!.next/*" "${existing_dirs[@]}" 2>/dev/null)" || true
+  else
+    results="$(grep -rniE "$gpattern" --include="*.ts" --include="*.js" --include="*.tsx" --include="*.jsx" --exclude-dir={node_modules,.next} "${existing_dirs[@]}" 2>/dev/null)" || true
+  fi
+  printf "\r\033[K"
+
+  if [[ -z "$results" ]]; then
+    echo "❌ No results found"
+    return
+  fi
+  print_results "$results"
+}
+
+cmd_page() {
+  local term="$*"
+  local norm="$(normalize "$term")"
+  
+  echo "🔍 Searching Pages/Routes for: $norm"
+  echo "$DIVIDER"
+
+  printf "⚙️  Scanning..."
+  local results
+  # App Router (page.tsx) or Pages Router (*.tsx in pages/)
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "$norm" --glob="**/page.tsx" --glob="**/page.jsx" --glob="pages/**/*.tsx" --glob="pages/**/*.jsx" 2>/dev/null)" || true
+  else
+    results="$(find . -type f \( -name "page.tsx" -o -name "page.jsx" -o -path "./pages/*.tsx" -o -path "./pages/*.jsx" \) -exec grep -niH "$norm" {} + 2>/dev/null)" || true
+  fi
+  printf "\r\033[K"
+
+  if [[ -z "$results" ]]; then
+    echo "❌ No matching pages found"
+    return
+  fi
+  print_results "$results"
+}
+
+cmd_api() {
+  local term="$*"
+  local norm="$(normalize "$term")"
+
+  echo "🔍 Searching API Routes for: $norm"
+  echo "$DIVIDER"
+
+  printf "⚙️  Scanning..."
+  local results
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "$norm" --glob="**/route.ts" --glob="**/route.js" --glob="pages/api/**/*.ts" --glob="pages/api/**/*.js" 2>/dev/null)" || true
+  else
+    results="$(find . -type f \( -name "route.ts" -o -name "route.js" -o -path "./pages/api/*.ts" -o -path "./pages/api/*.js" \) -exec grep -niH "$norm" {} + 2>/dev/null)" || true
+  fi
+  printf "\r\033[K"
+
+  if [[ -z "$results" ]]; then
+    echo "❌ No matching API routes found"
+    return
+  fi
+  print_results "$results"
+}
+
+print_usage() {
+  cat <<EOF
+nextsearch — semantic search for Next.js projects
+
+Commands:
+  where <term>       Search across src/, app/, pages/, components/
+  page <term>        Find pages (page.tsx / pages/*.tsx)
+  api <term>         Find API routes (route.ts / pages/api/*.ts)
+  component <term>   Find components (PascalCase filenames)
+  action <term>      Search for 'use server' actions
+
+Examples:
+  nextsearch page dashboard
+  nextsearch where login form
+EOF
+}
+
+if [[ $# -eq 0 ]]; then
+  print_usage
+  exit 0
+fi
+
+CMD="$1"
+shift
+
+case "$CMD" in
+  where)      cmd_where "$@" ;;
+  page)       cmd_page "$@" ;;
+  api)        cmd_api "$@" ;;
+  component)  cmd_where "$@" ;; # Simplified
+  *)
+    echo "❌ Unknown command: $CMD"
+    print_usage
+    exit 1
+    ;;
+esac

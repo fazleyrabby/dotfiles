@@ -1,106 +1,53 @@
-# dotfiles
+# Larasearch
 
-Personal dotfiles including `larasearch` — a semantic, fuzzy search CLI for Laravel projects.
+A high-performance semantic search tool for Laravel projects. It helps you quickly find routes, models, controllers, and views, and can even generate AI-ready context blocks.
 
-## Install
+## Features
 
+- **Semantic Search:** Find code using various naming conventions (camelCase, snake_case, PascalCase) automatically.
+- **Directory Scoped:** Targeted searches for Laravel modules (e.g., `larasearch model User`).
+- **AI Context:** Generate a structured prompt block for a specific route/method using `larasearch ai <term>`.
+- **High Performance:** Automatically utilizes `ripgrep` for lightning-fast file scanning if available.
+
+## Installation
+
+1. Clone this repository to your preferred location.
+2. Run the install script (or manually link to your `~/.larasearch` directory):
+   ```bash
+   ./install.sh
+   ```
+3. Add `~/.larasearch` to your PATH.
+
+## Dependencies
+
+- **Bash 4+**
+- **PHP** (for `artisan` commands)
+- **ripgrep (`rg`)** (Optional but highly recommended for 10x faster searches). 
+  - Install via Homebrew: `brew install ripgrep`
+
+## Usage
+
+### Core Commands
+- `larasearch route <term>`: Search routes (fuzzy match).
+- `larasearch where <term>`: Search usage across `app/`, `routes/`, and `resources/`.
+- `larasearch view <term>`: Search specifically within blade views.
+- `larasearch ai <term>`: Build AI context for a specific route.
+
+### Module Searches
+Quickly find definitions in specific directories:
+`action`, `command`, `controller`, `event`, `job`, `listener`, `mail`, `middleware`, `model`, `notification`, `observer`, `policy`, `provider`, `request`, `resource`, `rule`, `service`, `cast`, `exception`, `channel`, `component`, `facade`, `factory`, `seeder`, `livewire`, `migration`, `repository`, `contract`, `helper`, `dto`, `filament`.
+
+Example:
 ```bash
-git clone https://github.com/fazleyrabby/dotfiles.git ~/Desktop/Projects/dotfiles
-cd ~/Desktop/Projects/dotfiles
-./install.sh
-exec zsh
+larasearch model Order
+larasearch controller Payment
 ```
 
-## larasearch
+## Recent Updates
 
-Works from any subdirectory inside a Laravel project. Auto-detects Laravel root via `artisan`.
-
-### Commands
-
-```bash
-# Search routes (fuzzy)
-larasearch route cancel order
-larasearch route cancel_order
-larasearch route cancelOrder
-
-# Search usage across app/, routes/, resources/
-larasearch where cancelOrder
-larasearch where OrderService
-
-# Generate AI context block
-larasearch ai cancel order
-larasearch ai cancel_order
-```
-
-### Fuzzy Normalization
-
-All three forms match identically:
-
-```
-cancelOrder   → cancel order
-cancel_order  → cancel order
-Cancel-Order  → cancel order
-```
-
-### ai command output
-
-```
-🧠 Building AI context for: cancel order
-----------------------------------------
-
-📍 Route:
-  POST /orders/{id}/cancel | OrderController@cancel
-
-🎮 Controller:
-  App\Http\Controllers\OrderController@cancel
-
-📂 Scanning:
-  [1] app/Http/Controllers/OrderController.php
-  [2] app/Services/OrderService.php
-  ...
-
-📊 Scanned 84 files
-
-🔍 Related Usage:
-  app/Services/OrderService.php:   public function cancel(Order $order)
-
-----------------------------------------
-
-📦 AI PROMPT:
-
-Route:
-  POST /orders/{id}/cancel | OrderController@cancel
-
-Controller:
-  App\Http\Controllers\OrderController@cancel
-
-Focus:
-  cancel
-```
-
-Paste the `📦 AI PROMPT` block into any AI assistant alongside your question for minimal, high-signal context.
-
-## Structure
-
-```
-dotfiles/
-├── install.sh           # idempotent installer
-├── larasearch/
-│   ├── larasearch       # entry point (artisan detection)
-│   └── dev              # core engine (all commands)
-├── shared/
-│   ├── aliases.sh
-│   ├── env.sh
-│   └── functions.sh
-├── zsh/
-│   └── .zshrc
-├── claude/config/
-├── codex/config/
-└── gemini/config/
-```
-
-## Requirements
-
-- macOS / zsh
-- PHP (for `php artisan route:list`)
-- bash, grep, awk, sed, find (all standard)
+- **Ripgrep Support:** Integrated `rg` for near-instant project scanning.
+- **Bash Loop Optimization:** Refactored internal pipelines to remove slow Bash loops in the AI context generator.
+- **Bug Fixes:** 
+    - Fixed "unbound variable" error when running commands without search terms.
+    - Improved regex compatibility between standard `grep` and `ripgrep`.
+    - Better handling of Laravel project root detection.

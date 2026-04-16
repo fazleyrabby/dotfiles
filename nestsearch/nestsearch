@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# nestsearch — entry point
+# Traverses up to find NestJS root (nest-cli.json), then delegates to dev
+
+set -euo pipefail
+
+find_nest_root() {
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/nest-cli.json" || -f "$dir/package.json" && -d "$dir/src" && -f "$dir/src/main.ts" ]]; then
+      echo "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+if ! NEST_ROOT="$(find_nest_root)"; then
+  echo "❌ Not inside a NestJS project" >&2
+  exit 1
+fi
+
+export NEST_ROOT
+
+cd "$NEST_ROOT"
+
+# Check if script is installed in ~/.nestsearch or running from project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/dev" ]]; then
+  exec "$SCRIPT_DIR/dev" "$@"
+elif [[ -f "$HOME/.nestsearch/dev" ]]; then
+  exec "$HOME/.nestsearch/dev" "$@"
+else
+  echo "❌ Could not find nestsearch/dev" >&2
+  exit 1
+fi

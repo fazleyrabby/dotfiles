@@ -44,10 +44,13 @@ make_grep_pattern() {
   dot_star="$(echo "$norm" | sed 's/ /.*/g')"
 
   # camelCase: cancelOrder
-  local camel="${words[0]}"
-  for w in "${words[@]:1}"; do
-    camel+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
-  done
+  local camel=""
+  if [[ ${#words[@]} -gt 0 ]]; then
+    camel="${words[0]}"
+    for w in "${words[@]:1}"; do
+      camel+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
+    done
+  fi
 
   # snake_case: cancel_order
   local snake
@@ -55,9 +58,11 @@ make_grep_pattern() {
 
   # PascalCase: CancelOrder
   local pascal=""
-  for w in "${words[@]}"; do
-    pascal+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
-  done
+  if [[ ${#words[@]} -gt 0 ]]; then
+    for w in "${words[@]}"; do
+      pascal+="$(echo "${w:0:1}" | tr '[:lower:]' '[:upper:]')${w:1}"
+    done
+  fi
 
   echo "${dot_star}|${camel}|${snake}|${pascal}"
 }
@@ -108,14 +113,21 @@ cmd_where() {
   printf "⚙️  Scanning project files..."
 
   local results
-  results="$(grep -rniE "$gpattern" \
-    --include="*.php" \
-    --exclude-dir=vendor \
-    --exclude-dir=node_modules \
-    --exclude-dir=storage \
-    --exclude-dir=.git \
-    --exclude-dir=bootstrap \
-    app/ routes/ resources/ 2>/dev/null)" || true
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "$gpattern" \
+      -t php \
+      --glob="!vendor/*" \
+      --glob="!node_modules/*" \
+      --glob="!storage/*" \
+      --glob="!.git/*" \
+      --glob="!bootstrap/*" \
+      app/ routes/ resources/ 2>/dev/null)" || true
+  else
+    results="$(grep -rniE "$gpattern" \
+      --include="*.php" \
+      --exclude-dir={vendor,node_modules,storage,.git,bootstrap} \
+      app/ routes/ resources/ 2>/dev/null)" || true
+  fi
 
   printf "\r\033[K"
 
@@ -148,16 +160,9 @@ cmd_ai() {
     exit 1
   fi
 
-  # Step 2: find best matching route
-  local best_route=""
-  while IFS= read -r line; do
-    local norm_line
-    norm_line="$(normalize "$line")"
-    if echo "$norm_line" | grep -qiE "$pattern"; then
-      best_route="$line"
-      break
-    fi
-  done <<< "$raw"
+  # Step 2: find best matching route (using grep instead of bash loop)
+  local best_route
+  best_route="$(echo "$raw" | grep -iE "$pattern" | head -1)"
 
   if [[ -z "$best_route" ]]; then
     echo "❌ No matching route found for: $norm"
@@ -191,15 +196,11 @@ cmd_ai() {
     printf "⚙️  Scanning for usages..."
 
     local usage_raw
-    usage_raw="$(grep -rniE "$mgpattern" \
-      --include="*.php" \
-      --exclude-dir=vendor \
-      --exclude-dir=node_modules \
-      --exclude-dir=storage \
-      --exclude-dir=.git \
-      --exclude-dir=bootstrap \
-      app/ 2>/dev/null \
-      | head -10)" || true
+    if command -v rg >/dev/null 2>&1; then
+      usage_raw="$(rg -ni "$mgpattern" -t php --glob="!vendor/*" --glob="!node_modules/*" --glob="!storage/*" --glob="!.git/*" --glob="!bootstrap/*" app/ 2>/dev/null | head -10)" || true
+    else
+      usage_raw="$(grep -rniE "$mgpattern" --include="*.php" --exclude-dir={vendor,node_modules,storage,.git,bootstrap} app/ 2>/dev/null | head -10)" || true
+    fi
 
     printf "\r\033[K"
 
@@ -290,14 +291,11 @@ cmd_def() {
   printf "⚙️  Scanning project files..."
 
   local results
-  results="$(grep -rniE "${keyword}\s+(${gpattern})" \
-    --include="*.php" \
-    --exclude-dir=vendor \
-    --exclude-dir=node_modules \
-    --exclude-dir=storage \
-    --exclude-dir=.git \
-    --exclude-dir=bootstrap \
-    app/ 2>/dev/null)" || true
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "${keyword}\s+(${gpattern})" -t php --glob="!vendor/*" --glob="!node_modules/*" --glob="!storage/*" --glob="!.git/*" --glob="!bootstrap/*" app/ 2>/dev/null)" || true
+  else
+    results="$(grep -rniE "${keyword}\s+(${gpattern})" --include="*.php" --exclude-dir={vendor,node_modules,storage,.git,bootstrap} app/ 2>/dev/null)" || true
+  fi
 
   printf "\r\033[K"
 
@@ -343,11 +341,11 @@ cmd_module() {
   printf "⚙️  Scanning %s..." "${dirs[*]}"
 
   local results
-  results="$(grep -rniE "(class|abstract class|trait|interface|enum)\s+(${gpattern})" \
-    --include="*.php" \
-    --exclude-dir=vendor \
-    --exclude-dir=node_modules \
-    "${dirs[@]}" 2>/dev/null)" || true
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "(class|abstract class|trait|interface|enum)\s+(${gpattern})" -t php --glob="!vendor/*" --glob="!node_modules/*" "${dirs[@]}" 2>/dev/null)" || true
+  else
+    results="$(grep -rniE "(class|abstract class|trait|interface|enum)\s+(${gpattern})" --include="*.php" --exclude-dir={vendor,node_modules} "${dirs[@]}" 2>/dev/null)" || true
+  fi
 
   printf "\r\033[K"
 
@@ -395,8 +393,11 @@ cmd_migration() {
   gpattern="$(make_grep_pattern "$term")"
 
   local results
-  # Grep inside the found files.
-  results="$(grep -niE "(${gpattern})" $files 2>/dev/null)" || true
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "(${gpattern})" $files 2>/dev/null)" || true
+  else
+    results="$(grep -niE "(${gpattern})" $files 2>/dev/null)" || true
+  fi
 
   if [[ -z "$results" ]]; then
     # if grep finds nothing, just show the filenames
@@ -429,11 +430,11 @@ cmd_view() {
   printf "⚙️  Scanning view files..."
 
   local results
-  results="$(grep -rniE "$gpattern" \
-    --include="*.blade.php" \
-    --exclude-dir=vendor \
-    --exclude-dir=node_modules \
-    resources/views/ 2>/dev/null)" || true
+  if command -v rg >/dev/null 2>&1; then
+    results="$(rg -ni "$gpattern" --glob="*.blade.php" --glob="!vendor/*" --glob="!node_modules/*" resources/views/ 2>/dev/null)" || true
+  else
+    results="$(grep -rniE "$gpattern" --include="*.blade.php" --exclude-dir={vendor,node_modules} resources/views/ 2>/dev/null)" || true
+  fi
 
   printf "\r\033[K"
 

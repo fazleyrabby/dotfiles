@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# nextsearch — entry point
+# Traverses up to find Next.js root (next.config.js), then delegates to dev
+
+set -euo pipefail
+
+find_next_root() {
+  local dir="$PWD"
+  while [[ "$dir" != "/" ]]; do
+    if [[ -f "$dir/next.config.js" || -f "$dir/next.config.mjs" || -f "$dir/next.config.ts" ]]; then
+      echo "$dir"
+      return 0
+    fi
+    dir="$(dirname "$dir")"
+  done
+  return 1
+}
+
+if ! NEXT_ROOT="$(find_next_root)"; then
+  echo "❌ Not inside a Next.js project" >&2
+  exit 1
+fi
+
+export NEXT_ROOT
+
+cd "$NEXT_ROOT"
+
+# Check if script is installed in ~/.nextsearch or running from project root
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ -f "$SCRIPT_DIR/dev" ]]; then
+  exec "$SCRIPT_DIR/dev" "$@"
+elif [[ -f "$HOME/.nextsearch/dev" ]]; then
+  exec "$HOME/.nextsearch/dev" "$@"
+else
+  echo "❌ Could not find nextsearch/dev" >&2
+  exit 1
+fi
